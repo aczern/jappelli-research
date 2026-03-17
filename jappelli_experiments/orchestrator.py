@@ -19,15 +19,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from jappelli_experiments.config import CACHE_DIR, OUTPUT_DIR, INTERMEDIATE_DIR, LOG_DIR
-
 logger = logging.getLogger(__name__)
 
 
 class ExperimentOrchestrator:
     """Wires cached data -> intermediate variables -> experiment execution."""
 
-    def __init__(self, skip_downloads=False, colab_mode=False, cache_dir=None):
+    def __init__(self, skip_downloads=False, colab_mode=False, cache_dir=None,
+                 output_dir=None):
         self.skip_downloads = skip_downloads
         self.colab_mode = colab_mode
 
@@ -38,6 +37,24 @@ class ExperimentOrchestrator:
             # Also update the cache module's reference
             import jappelli_experiments.data.cache as cache_mod
             cache_mod.CACHE_DIR = cfg.CACHE_DIR
+
+        # Override output paths globally if a custom path is provided
+        if output_dir is not None:
+            import jappelli_experiments.config as cfg
+            cfg.OUTPUT_DIR = Path(output_dir)
+            cfg.TABLE_DIR = cfg.OUTPUT_DIR / "tables"
+            cfg.FIGURE_DIR = cfg.OUTPUT_DIR / "figures"
+            cfg.LOG_DIR = cfg.OUTPUT_DIR / "logs"
+            cfg.INTERMEDIATE_DIR = cfg.OUTPUT_DIR / "intermediate"
+
+            # Patch consumer modules' local name bindings
+            import jappelli_experiments.shared.table_formatter as tf_mod
+            tf_mod.TABLE_DIR = cfg.TABLE_DIR
+            import jappelli_experiments.shared.plot_config as pc_mod
+            pc_mod.FIGURE_DIR = cfg.FIGURE_DIR
+            import jappelli_experiments.shared.connection_mapper as cm_mod
+            cm_mod.INTERMEDIATE_DIR = cfg.INTERMEDIATE_DIR
+            cm_mod.LOG_DIR = cfg.LOG_DIR
 
         # Raw data
         self.crsp_msi = None
@@ -69,9 +86,10 @@ class ExperimentOrchestrator:
         self._phase_0_done = False
         self._phase_1_done = False
 
-        # Ensure output directories exist
-        for d in [OUTPUT_DIR, INTERMEDIATE_DIR, LOG_DIR,
-                  OUTPUT_DIR / "tables", OUTPUT_DIR / "figures"]:
+        # Ensure output directories exist (use config module for patched values)
+        import jappelli_experiments.config as cfg
+        for d in [cfg.OUTPUT_DIR, cfg.INTERMEDIATE_DIR, cfg.LOG_DIR,
+                  cfg.TABLE_DIR, cfg.FIGURE_DIR]:
             d.mkdir(parents=True, exist_ok=True)
 
     # ── Phase 0: Load all cached data ────────────────────────────
@@ -147,7 +165,7 @@ class ExperimentOrchestrator:
         Used when colab_mode=True.
         """
         from jappelli_experiments.data.cache import load_cache
-        from jappelli_experiments.config import CACHE_DIR
+        import jappelli_experiments.config as cfg
 
         # ── CRSP + Compustat ──
         required = {
@@ -163,7 +181,7 @@ class ExperimentOrchestrator:
             if df is None:
                 raise FileNotFoundError(
                     f"{desc} not found in cache as '{cache_name}.parquet'. "
-                    f"Ensure CACHE_DIR ({CACHE_DIR}) contains all parquets."
+                    f"Ensure CACHE_DIR ({cfg.CACHE_DIR}) contains all parquets."
                 )
             setattr(self, attr, df)
             logger.info(f"  {attr}: {df.shape}")
@@ -174,12 +192,12 @@ class ExperimentOrchestrator:
         if ff5 is None:
             raise FileNotFoundError(
                 f"FF5 factors not found in cache as 'ff5_monthly.parquet'. "
-                f"Ensure CACHE_DIR ({CACHE_DIR}) contains all parquets."
+                f"Ensure CACHE_DIR ({cfg.CACHE_DIR}) contains all parquets."
             )
         if mom is None:
             raise FileNotFoundError(
                 f"Momentum factor not found in cache as 'mom_monthly.parquet'. "
-                f"Ensure CACHE_DIR ({CACHE_DIR}) contains all parquets."
+                f"Ensure CACHE_DIR ({cfg.CACHE_DIR}) contains all parquets."
             )
         # Replicate get_ff6_monthly merge logic
         if "date" in ff5.columns:
@@ -396,8 +414,9 @@ class ExperimentOrchestrator:
 
         # Compute static ownership year by year
         logger.info("Computing static ownership from holdings (year by year)...")
+        import jappelli_experiments.config as cfg
         so_chunks = []
-        holdings_files = sorted(CACHE_DIR.glob("crsp_mf_holdings_*.parquet"))
+        holdings_files = sorted(cfg.CACHE_DIR.glob("crsp_mf_holdings_*.parquet"))
 
         if not holdings_files:
             logger.error("No holdings files found in cache. Cannot run Block B.")
@@ -667,8 +686,9 @@ class ExperimentOrchestrator:
 
     def _load_holdings_subset(self, start_year, end_year):
         """Load holdings for a range of years, handling H1/H2 naming."""
+        import jappelli_experiments.config as cfg
         frames = []
-        for f in sorted(CACHE_DIR.glob("crsp_mf_holdings_*.parquet")):
+        for f in sorted(cfg.CACHE_DIR.glob("crsp_mf_holdings_*.parquet")):
             stem = f.stem.replace("crsp_mf_holdings_", "")
             try:
                 year = int(stem[:4])
@@ -715,24 +735,31 @@ def main():
         "--cache-dir", type=str, default=None,
         help="Override cache directory (e.g., /content/drive/MyDrive/cache)",
     )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Override output directory (e.g., /content/drive/MyDrive/jappelli_output)",
+    )
     args = parser.parse_args()
 
-    # Ensure log directory exists before configuring logging
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # Construct orchestrator first so output_dir/cache_dir patches take effect
+    orch = ExperimentOrchestrator(
+        skip_downloads=args.skip_downloads,
+        colab_mode=args.colab,
+        cache_dir=args.cache_dir,
+        output_dir=args.output_dir,
+    )
+
+    # Configure logging after orchestrator construction so LOG_DIR reflects patches
+    import jappelli_experiments.config as cfg
+    cfg.LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler(LOG_DIR / "orchestrator.log", mode="a"),
+            logging.FileHandler(cfg.LOG_DIR / "orchestrator.log", mode="a"),
         ],
-    )
-
-    orch = ExperimentOrchestrator(
-        skip_downloads=args.skip_downloads,
-        colab_mode=args.colab,
-        cache_dir=args.cache_dir,
     )
 
     if args.block == "status":
