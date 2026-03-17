@@ -194,9 +194,9 @@ def get_ff6_monthly(use_cache=True):
     ff5 = get_ff5_monthly(use_cache)
     mom = get_momentum_monthly(use_cache)
 
-    if isinstance(ff5.index[0], str):
+    if "date" in ff5.columns:
         ff5 = ff5.set_index("date")
-    if isinstance(mom.index[0], str):
+    if "date" in mom.columns:
         mom = mom.set_index("date")
 
     merged = ff5.join(mom, how="inner")

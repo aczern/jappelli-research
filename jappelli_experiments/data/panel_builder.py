@@ -153,7 +153,10 @@ def compute_aggregate_flows(fund_flows, fund_class):
                    on="crsp_fundno", how="inner")
 
     agg = df.groupby(["caldt", "is_static"])["flow"].sum().unstack("is_static")
-    agg.columns = ["dynamic_flow", "static_flow"]
+    agg = agg.rename(columns={False: "dynamic_flow", True: "static_flow"})
+    for col in ["dynamic_flow", "static_flow"]:
+        if col not in agg.columns:
+            agg[col] = 0.0
     agg["total_flow"] = agg["dynamic_flow"] + agg["static_flow"]
 
     return agg
