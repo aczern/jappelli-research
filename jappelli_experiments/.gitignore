@@ -1,0 +1,15 @@
+# Data files - never commit these
+*.parquet
+*.csv
+*.h5
+*.pkl
+data/cache/
+
+# Credentials
+.pgpass
+.env
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
