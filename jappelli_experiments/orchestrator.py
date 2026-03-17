@@ -26,7 +26,7 @@ class ExperimentOrchestrator:
     """Wires cached data -> intermediate variables -> experiment execution."""
 
     def __init__(self, skip_downloads=False, colab_mode=False, cache_dir=None,
-                 output_dir=None):
+                 output_dir=None, data_dir=None):
         self.skip_downloads = skip_downloads
         self.colab_mode = colab_mode
 
@@ -55,6 +55,46 @@ class ExperimentOrchestrator:
             import jappelli_experiments.shared.connection_mapper as cm_mod
             cm_mod.INTERMEDIATE_DIR = cfg.INTERMEDIATE_DIR
             cm_mod.LOG_DIR = cfg.LOG_DIR
+
+        # Override DATA_ROOT and all derived paths (Haddad, Jiang, etc.)
+        if data_dir is not None:
+            import jappelli_experiments.config as cfg
+            cfg.DATA_ROOT = Path(data_dir)
+
+            # Rebuild derived directory paths
+            cfg.JIANG_DIR = cfg.DATA_ROOT / "Jiang" / "Empirical results"
+            cfg.JIANG_SEC6 = cfg.JIANG_DIR / "Section 6"
+            cfg.JIANG_APPENDIX = cfg.JIANG_DIR / "Appendices C E3"
+            cfg.OTHER_PAPER_DIR = (cfg.DATA_ROOT / "Other paper"
+                                   / "Replication Code-20221112" / "data")
+            cfg.HADDAD_DIR = cfg.DATA_ROOT / "Haddad 2"
+            cfg.HADDAD_ESTIMATION = (cfg.HADDAD_DIR / "Estimation"
+                                     / "output" / "estimation")
+            cfg.HADDAD_ANALYSIS = cfg.HADDAD_DIR / "Analysis" / "output"
+            cfg.BACKUS_DIR = cfg.DATA_ROOT / "Backus"
+            cfg.BACKUS_DATA = cfg.BACKUS_DIR / "data" / "public"
+            cfg.BACKUS_CODE = cfg.BACKUS_DIR / "code"
+
+            # Rebuild DATA_FILES registry
+            cfg.DATA_FILES = {
+                "sp500": cfg.JIANG_SEC6 / "sp500.dta",
+                "sp600": cfg.JIANG_SEC6 / "sp600.dta",
+                "flow_iv": cfg.JIANG_SEC6 / "flow_iv.dta",
+                "ret_daily": cfg.JIANG_APPENDIX / "ret_daily_seasonality.dta",
+                "sp500_adddrop": cfg.OTHER_PAPER_DIR / "500diradddrop.dta",
+                "russell": cfg.OTHER_PAPER_DIR / "russ_1990_2021_fix.dta",
+                "daily_volume": cfg.OTHER_PAPER_DIR / "dailyvolume.dta",
+            }
+
+            # Patch loaders module's local name bindings
+            import jappelli_experiments.data.loaders as loaders_mod
+            loaders_mod.DATA_FILES = cfg.DATA_FILES
+            loaders_mod.HADDAD_ESTIMATION = cfg.HADDAD_ESTIMATION
+            loaders_mod.HADDAD_ANALYSIS = cfg.HADDAD_ANALYSIS
+            loaders_mod.BACKUS_DATA = cfg.BACKUS_DATA
+            loaders_mod.JIANG_SEC6 = cfg.JIANG_SEC6
+            loaders_mod.JIANG_APPENDIX = cfg.JIANG_APPENDIX
+            loaders_mod.OTHER_PAPER_DIR = cfg.OTHER_PAPER_DIR
 
         # Raw data
         self.crsp_msi = None
@@ -739,6 +779,10 @@ def main():
         "--output-dir", type=str, default=None,
         help="Override output directory (e.g., /content/drive/MyDrive/jappelli_output)",
     )
+    parser.add_argument(
+        "--data-dir", type=str, default=None,
+        help="Override 'Data and Code' directory (e.g., /content/drive/MyDrive/jappelli/Data and Code)",
+    )
     args = parser.parse_args()
 
     # Construct orchestrator first so output_dir/cache_dir patches take effect
@@ -747,6 +791,7 @@ def main():
         colab_mode=args.colab,
         cache_dir=args.cache_dir,
         output_dir=args.output_dir,
+        data_dir=args.data_dir,
     )
 
     # Configure logging after orchestrator construction so LOG_DIR reflects patches
