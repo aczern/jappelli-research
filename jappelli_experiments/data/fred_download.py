@@ -35,8 +35,13 @@ def download_fred_series(series_id, start=SAMPLE_START, end=SAMPLE_END):
     url = FRED_URL_TEMPLATE.format(series=series_id, start=start, end=end)
     logger.info(f"Downloading FRED series {series_id}")
 
-    df = pd.read_csv(url, parse_dates=["DATE"])
-    df.columns = ["date", series_id.lower()]
+    df = pd.read_csv(url)
+    # FRED uses 'observation_date' as the date column
+    date_col = [c for c in df.columns if "date" in c.lower()][0]
+    df = df.rename(columns={date_col: "date"})
+    df["date"] = pd.to_datetime(df["date"])
+    val_col = [c for c in df.columns if c != "date"][0]
+    df = df.rename(columns={val_col: series_id.lower()})
 
     # FRED uses '.' for missing values
     df[series_id.lower()] = pd.to_numeric(df[series_id.lower()], errors="coerce")
