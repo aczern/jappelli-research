@@ -14,6 +14,7 @@ import argparse
 import gc
 import logging
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,9 +27,17 @@ logger = logging.getLogger(__name__)
 class ExperimentOrchestrator:
     """Wires cached data -> intermediate variables -> experiment execution."""
 
-    def __init__(self, skip_downloads=False, colab_mode=False):
+    def __init__(self, skip_downloads=False, colab_mode=False, cache_dir=None):
         self.skip_downloads = skip_downloads
         self.colab_mode = colab_mode
+
+        # Override CACHE_DIR globally if a custom path is provided
+        if cache_dir is not None:
+            import jappelli_experiments.config as cfg
+            cfg.CACHE_DIR = Path(cache_dir)
+            # Also update the cache module's reference
+            import jappelli_experiments.data.cache as cache_mod
+            cache_mod.CACHE_DIR = cfg.CACHE_DIR
 
         # Raw data
         self.crsp_msi = None
@@ -73,11 +82,26 @@ class ExperimentOrchestrator:
         logger.info("PHASE 0: Loading cached data")
         logger.info("=" * 60)
 
-        # Step 0a: Download missing free data if not skipped
-        if not self.skip_downloads:
-            self._download_free_data()
+        if self.colab_mode:
+            self._load_all_from_cache()
+        else:
+            if not self.skip_downloads:
+                self._download_free_data()
+            self._load_with_downloads()
 
-        # CRSP
+        # S&P 500 events (soft failure — file-based, may not exist in Colab)
+        try:
+            from jappelli_experiments.data.loaders import load_sp500_adddrop
+            self.sp500_events = load_sp500_adddrop()
+            logger.info(f"  sp500_events: {self.sp500_events.shape}")
+        except (FileNotFoundError, Exception):
+            logger.warning("  sp500_events: NOT AVAILABLE (file not found)")
+
+        self._phase_0_done = True
+        logger.info("PHASE 0 COMPLETE")
+
+    def _load_with_downloads(self):
+        """Load data via wrds_download / ff_download / fred_download (original path)."""
         from jappelli_experiments.data.wrds_download import (
             download_crsp_msi, download_crsp_msf, download_crsp_mf_summary,
             download_compustat_funda, download_ccm_link,
@@ -116,16 +140,71 @@ class ExperimentOrchestrator:
         self.rf_rate = get_risk_free_rate("monthly")
         logger.info(f"  rf_rate: {len(self.rf_rate)} months")
 
-        # S&P 500 events
-        from jappelli_experiments.data.loaders import load_sp500_adddrop
-        try:
-            self.sp500_events = load_sp500_adddrop()
-            logger.info(f"  sp500_events: {self.sp500_events.shape}")
-        except FileNotFoundError:
-            logger.warning("  sp500_events: NOT AVAILABLE (file not found)")
+    def _load_all_from_cache(self):
+        """Load all data from parquet cache (no WRDS, no network).
 
-        self._phase_0_done = True
-        logger.info("PHASE 0 COMPLETE")
+        Bypasses wrds_download.py entirely so `import wrds` never executes.
+        Used when colab_mode=True.
+        """
+        from jappelli_experiments.data.cache import load_cache
+        from jappelli_experiments.config import CACHE_DIR
+
+        # ── CRSP + Compustat ──
+        required = {
+            "crsp_msi":   ("crsp_msi",        "CRSP Monthly Stock Index"),
+            "crsp_msf":   ("crsp_msf",        "CRSP Monthly Stock File"),
+            "mf_summary": ("crsp_mf_summary", "CRSP Mutual Fund Summary"),
+            "compustat":  ("compustat_funda",  "Compustat Annual"),
+            "ccm_link":   ("ccm_link",         "CRSP-Compustat Link"),
+        }
+
+        for attr, (cache_name, desc) in required.items():
+            df = load_cache(cache_name)
+            if df is None:
+                raise FileNotFoundError(
+                    f"{desc} not found in cache as '{cache_name}.parquet'. "
+                    f"Ensure CACHE_DIR ({CACHE_DIR}) contains all parquets."
+                )
+            setattr(self, attr, df)
+            logger.info(f"  {attr}: {df.shape}")
+
+        # ── Fama-French factors ──
+        ff5 = load_cache("ff5_monthly")
+        mom = load_cache("mom_monthly")
+        if ff5 is None:
+            raise FileNotFoundError(
+                f"FF5 factors not found in cache as 'ff5_monthly.parquet'. "
+                f"Ensure CACHE_DIR ({CACHE_DIR}) contains all parquets."
+            )
+        if mom is None:
+            raise FileNotFoundError(
+                f"Momentum factor not found in cache as 'mom_monthly.parquet'. "
+                f"Ensure CACHE_DIR ({CACHE_DIR}) contains all parquets."
+            )
+        # Replicate get_ff6_monthly merge logic
+        if "date" in ff5.columns:
+            ff5 = ff5.set_index("date")
+        if "date" in mom.columns:
+            mom = mom.set_index("date")
+        self.ff_factors = ff5.join(mom, how="inner")
+        logger.info(f"  ff_factors: {self.ff_factors.shape}")
+
+        # ── FRED ──
+        fred_all = load_cache("fred_all")
+        if fred_all is not None:
+            fred = fred_all.set_index("date") if "date" in fred_all.columns else fred_all
+            self.fred_data = fred.resample("ME").last()
+            logger.info(f"  fred_data: {self.fred_data.shape}")
+
+            # Derive risk-free rate (TB3MS / 100 → monthly)
+            if "tb3ms" in fred.columns:
+                rf = fred["tb3ms"] / 100
+                self.rf_rate = rf.resample("ME").last() / 12
+                logger.info(f"  rf_rate: {len(self.rf_rate)} months")
+            else:
+                logger.warning("  rf_rate: tb3ms column not in fred_all cache")
+        else:
+            logger.warning("  fred_data: NOT AVAILABLE (fred_all not in cache)")
 
     def _download_free_data(self):
         """Download FRED series and momentum factor if not already cached."""
@@ -630,7 +709,11 @@ def main():
     )
     parser.add_argument(
         "--colab", action="store_true",
-        help="Colab mode (adjust memory settings)",
+        help="Colab mode (cache-only, no WRDS connection)",
+    )
+    parser.add_argument(
+        "--cache-dir", type=str, default=None,
+        help="Override cache directory (e.g., /content/drive/MyDrive/cache)",
     )
     args = parser.parse_args()
 
@@ -649,6 +732,7 @@ def main():
     orch = ExperimentOrchestrator(
         skip_downloads=args.skip_downloads,
         colab_mode=args.colab,
+        cache_dir=args.cache_dir,
     )
 
     if args.block == "status":
