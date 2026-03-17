@@ -1,0 +1,32 @@
+# Large data files
+*.dta
+*.parquet
+*.sas7bdat
+*.arrow
+*.fst
+*.pdf
+
+# Directories with large data
+Data and Code/
+output/intermediate/
+
+# Cached data
+jappelli_experiments/data/cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
